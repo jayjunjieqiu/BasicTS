@@ -36,11 +36,37 @@ MODEL_PARAM = {
     'd_ff': 256,
     'dropout': 0.1,
     'm': 4,
-    'ctx_len': 24,
+    'ctx_len': 336,
     'use_y_in_encoder': False,
+    'compute_phase_reg': 0,
+    'compute_cycle_reg': 0,
+    'reg_stride': 8,
+    # new stabilization knobs
+    'a_max': 1.5,
+    'period_min': 12,
+    'period_max': 336,
+    'use_scaled_r': 0,
+    'pos_dim': 8,
+    'use_query_context': 1,
+    # RevIN
+    'revin': 1,
+    'revin_affine': 0,
+    'revin_subtract_last': 0,
+    # Fixed history feature dimension to avoid lazy layers
+    'hist_feat_dim': 1,
+    # PPE LN off for stronger signal
+    'apply_ppe_ln': 1,
+    # Expert feedback toggles
+    'hnet_type': 'mlp',
+    'phi_mode': 'sincos',
+    'wave_mlp_hidden': 0,
+    'ppe_code_dim': 0,
+    'use_query_gate': 1,
+    'query_pos_dim': 4,
+    'simple': 0,
 }
 
-LAMBDA_UNIT = float(os.environ.get('HFPPE_LAMBDA_UNIT', 1e-3))
+LAMBDA_UNIT = float(os.environ.get('HFPPE_LAMBDA_UNIT', 0.0))
 LAMBDA_PHASE = float(os.environ.get('HFPPE_LAMBDA_PHASE', 1e-3))
 LAMBDA_CYCLE = float(os.environ.get('HFPPE_LAMBDA_CYCLE', 1e-3))
 HUBER_DELTA = float(os.environ.get('HFPPE_HUBER_DELTA', 1.0))
@@ -50,7 +76,7 @@ NUM_EPOCHS = int(os.environ.get('HFPPE_EPOCHS', 100))
 ############################## General Configuration ##############################
 CFG = EasyDict()
 CFG.DESCRIPTION = 'HF-PPE on ETTh1'
-CFG.GPU_NUM = 1
+CFG.GPU_NUM = 4
 CFG.RUNNER = SimpleTimeSeriesForecastingRunner
 
 ############################## Dataset Configuration ##############################
@@ -105,22 +131,26 @@ CFG.TRAIN.LOSS_ARGS = {
     'lambda_phase': LAMBDA_PHASE,
     'lambda_cycle': LAMBDA_CYCLE,
     'huber_delta': HUBER_DELTA,
+    'lambda_fft': 0.0,
 }
 CFG.TRAIN.OPTIM = EasyDict()
-CFG.TRAIN.OPTIM.TYPE = 'Adam'
+CFG.TRAIN.OPTIM.TYPE = 'AdamW'
 CFG.TRAIN.OPTIM.PARAM = {
-    'lr': 2e-4,
-    'weight_decay': 1e-4,
+    'lr': 5e-4,
+    'betas': (0.9, 0.95),
+    'weight_decay': 1e-2,
 }
 CFG.TRAIN.LR_SCHEDULER = EasyDict()
-CFG.TRAIN.LR_SCHEDULER.TYPE = 'MultiStepLR'
+CFG.TRAIN.LR_SCHEDULER.TYPE = 'CosineWarmup'
 CFG.TRAIN.LR_SCHEDULER.PARAM = {
-    'milestones': [1, 25, 50],
-    'gamma': 0.5,
+    'num_warmup_steps': 10,
+    'num_training_steps': NUM_EPOCHS,
+    'num_cycles': 0.5,
 }
+CFG.TRAIN.CL = EasyDict({'WARM_EPOCHS': 5, 'CL_EPOCHS': 5, 'PREDICTION_LENGTH': OUTPUT_LEN, 'STEP_SIZE': 8})
 CFG.TRAIN.CLIP_GRAD_PARAM = {'max_norm': 5.0}
 CFG.TRAIN.DATA = EasyDict()
-CFG.TRAIN.DATA.BATCH_SIZE = 32
+CFG.TRAIN.DATA.BATCH_SIZE = 64
 CFG.TRAIN.DATA.SHUFFLE = True
 
 ############################## Validation Configuration ##############################
@@ -138,4 +168,3 @@ CFG.TEST.DATA.BATCH_SIZE = 64
 ############################## Evaluation Configuration ##############################
 CFG.EVAL = EasyDict()
 CFG.EVAL.USE_GPU = True
-
