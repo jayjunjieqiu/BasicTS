@@ -13,7 +13,12 @@ class TimeSeriesForecastingDataset(BaseDataset):
     A dataset class for time series forecasting problems, handling the loading, parsing, and partitioning
     of time series data into training, validation, and testing sets based on provided ratios.
     
-    This class supports configurations where sequences may or may not overlap, accommodating scenarios
+    This class supports two splitting modes:
+    1. Traditional splitting: When train_val_test_ratio sums to 1, splits data sequentially from start.
+    2. Few-shot fine-tuning: When ratios don't sum to 1, uses [-|train|val|test] format where splits
+       are taken from the most recent portion of the data for few-shot scenarios.
+    
+    This class also supports configurations where sequences may or may not overlap, accommodating scenarios
     where time series data is drawn from continuous periods or distinct episodes, affecting how
     the data is split into batches for model training or evaluation.
     
@@ -33,7 +38,12 @@ class TimeSeriesForecastingDataset(BaseDataset):
         Args:
             dataset_name (str): The name of the dataset.
             train_val_test_ratio (List[float]): Ratios for splitting the dataset into train, validation, and test sets.
-                Each value should be a float between 0 and 1, and their sum should ideally be 1.
+                Two modes are supported:
+                1. Traditional splitting: When ratios sum to 1, data is split sequentially from the beginning.
+                   Example: [0.7, 0.1, 0.2] splits data as [0:70%, 70%:80%, 80%:100%].
+                2. Few-shot fine-tuning: When ratios don't sum to 1, uses [-|train|val|test] format where
+                   splits are taken from the most recent portion. Example: [0.06, 0.1, 0.2] creates splits
+                   at [64%:70%, 70%:80%, 80%:100%] of the total data length.
             mode (str): The operation mode of the dataset. Valid values are 'train', 'valid', or 'test'.
             input_len (int): The length of the input sequence (number of historical points).
             output_len (int): The length of the output sequence (number of future points to predict).
@@ -93,9 +103,23 @@ class TimeSeriesForecastingDataset(BaseDataset):
             raise ValueError(f'Error loading data file: {self.data_file_path}') from e
 
         total_len = len(data)
-        valid_len = int(total_len * self.train_val_test_ratio[1])
-        test_len = int(total_len * self.train_val_test_ratio[2])
-        train_len = total_len - valid_len - test_len
+        
+        # Check if ratios sum to 1 for traditional splitting or use [-|train|val|test] format
+        ratio_sum = sum(self.train_val_test_ratio)
+        if abs(ratio_sum - 1.0) < 1e-6:  # Traditional splitting when sum equals 1
+            valid_len = int(total_len * self.train_val_test_ratio[1])
+            test_len = int(total_len * self.train_val_test_ratio[2])
+            train_len = total_len - valid_len - test_len
+        else:  # [-|train|val|test] format when sum != 1
+            # Calculate lengths based on the new format
+            test_len = int(total_len * self.train_val_test_ratio[2])
+            valid_len = int(total_len * self.train_val_test_ratio[1])
+            train_len = int(total_len * self.train_val_test_ratio[0])
+            
+            # Calculate start positions for each split
+            test_start = total_len - test_len
+            valid_start = test_start - valid_len
+            train_start = valid_start - train_len
 
         # Automatically configure the overlap parameter
         minimal_len = self.input_len + self.output_len
@@ -110,16 +134,29 @@ class TimeSeriesForecastingDataset(BaseDataset):
             else:
                 print(f'{dataset} dataset is too short, enabling overlap. See details in {file_name} at line {line_number}.')
 
-        if self.mode == 'train':
-            offset = self.output_len if self.overlap else 0
-            seg = data[:train_len + offset]
-        elif self.mode == 'valid':
-            offset_left = self.input_len - 1 if self.overlap else 0
-            offset_right = self.output_len if self.overlap else 0
-            seg = data[train_len - offset_left : train_len + valid_len + offset_right]
-        else:  # self.mode == 'test'
-            offset = self.input_len - 1 if self.overlap else 0
-            seg = data[train_len + valid_len - offset:]
+        # Split data based on the ratio format
+        if abs(ratio_sum - 1.0) < 1e-6:  # Traditional splitting
+            if self.mode == 'train':
+                offset = self.output_len if self.overlap else 0
+                seg = data[:train_len + offset]
+            elif self.mode == 'valid':
+                offset_left = self.input_len - 1 if self.overlap else 0
+                offset_right = self.output_len if self.overlap else 0
+                seg = data[train_len - offset_left : train_len + valid_len + offset_right]
+            else:  # self.mode == 'test'
+                offset = self.input_len - 1 if self.overlap else 0
+                seg = data[train_len + valid_len - offset:]
+        else:  # [-|train|val|test] format
+            if self.mode == 'train':
+                offset = self.output_len if self.overlap else 0
+                seg = data[train_start:valid_start + offset]
+            elif self.mode == 'valid':
+                offset_left = self.input_len - 1 if self.overlap else 0
+                offset_right = self.output_len if self.overlap else 0
+                seg = data[valid_start - offset_left:test_start + offset_right]
+            else:  # self.mode == 'test'
+                offset = self.input_len - 1 if self.overlap else 0
+                seg = data[test_start - offset:]
 
         if not self.memmap:
             seg = seg.copy()
